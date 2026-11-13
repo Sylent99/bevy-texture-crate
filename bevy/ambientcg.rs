@@ -5,6 +5,7 @@
 //! (dev convenience, needs internet the first time), and gives you ready-made
 //! `StandardMaterial`s by role name.
 //!
+//! Materials: `<id>_<res>-<format>.zip`. HDRIs: `<id>_<res>.zip` (up to 16K; use 1K-4K for games).
 //! Written for Bevy 0.19. For Bevy 0.18 or older see the note in `load_tex`.
 //! Not compiled by its author, so expect to fix small things. Paste any compiler error
 //! into your chat and it can be corrected quickly.
@@ -49,8 +50,17 @@ pub struct AssetSpec {
 }
 
 impl AssetSpec {
+    /// HDRI downloads are named `<id>_<res>.zip` (no format suffix); materials are
+    /// `<id>_<res>-<format>.zip`.
     fn folder_name(&self) -> String {
-        format!("{}_{}-{}", self.id, self.resolution, self.format)
+        if self.id.contains("HDRI") || self.format.is_empty() {
+            format!("{}_{}", self.id, self.resolution)
+        } else {
+            format!("{}_{}-{}", self.id, self.resolution, self.format)
+        }
+    }
+    fn zip_name(&self) -> String {
+        format!("{}.zip", self.folder_name())
     }
 }
 
@@ -171,6 +181,26 @@ impl AmbientCgLibrary {
         handle
     }
 
+    /// For HDRI roles: the asset path (relative to `assets/`) of the downloaded
+    /// .hdr/.exr file. Note: Bevy's skybox / environment lighting wants a cubemap, so an
+    /// equirectangular HDRI still needs converting (not done here).
+    pub fn hdri_file(&self, role: &str, seed: u64) -> Option<String> {
+        let v = self.roles.get(role)?;
+        if v.is_empty() {
+            return None;
+        }
+        let spec = &v[(seed as usize) % v.len()];
+        let dir = assets_root().join("ambientcg").join(spec.folder_name());
+        for e in fs::read_dir(&dir).ok()?.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let lower = name.to_lowercase();
+            if lower.ends_with(".hdr") || lower.ends_with(".exr") {
+                return Some(format!("ambientcg/{}/{}", spec.folder_name(), name));
+            }
+        }
+        None
+    }
+
     fn fallback(&mut self, materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
         self.fallback
             .get_or_insert_with(|| {
@@ -289,32 +319,60 @@ fn load_palette(path: &Path) -> Result<PaletteFile, String> {
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
+fn dir_has_files(dir: &Path) -> bool {
+    fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false)
+}
+
 fn ensure_downloaded(spec: &AssetSpec, out_root: &Path) -> Result<(), String> {
     let dir = out_root.join(spec.folder_name());
-    if scan_maps(&dir).color.is_some() {
+    if dir_has_files(&dir) {
         return Ok(()); // already have it
     }
 
-    // Materials use this file-name pattern. HDRIs / 3D models may differ.
-    let url = format!(
-        "https://ambientcg.com/get?file={}_{}-{}.zip",
-        spec.id, spec.resolution, spec.format
-    );
-    info!("ambientCG: downloading {}", spec.folder_name());
+    // Not every asset exists at every resolution, so fall back to smaller ones.
+    let mut candidates = vec![spec.resolution.clone()];
+    for r in ["2K", "1K"] {
+        if !candidates.iter().any(|c| c == r) {
+            candidates.push(r.to_string());
+        }
+    }
 
     let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(300))
         .user_agent("bevy-ambientcg/0.1 (community tool)")
         .build();
-    let resp = agent.get(&url).call().map_err(|e| e.to_string())?;
 
-    let mut bytes = Vec::new();
-    resp.into_reader()
-        .take(1024 * 1024 * 1024) // 1 GB safety cap
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+    let mut last_err = String::from("no candidates");
+    for res in candidates {
+        let mut s = spec.clone();
+        s.resolution = res;
+        let url = format!("https://ambientcg.com/get?file={}", s.zip_name());
+        info!("ambientCG: downloading {}", s.zip_name());
 
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    zip.extract(&dir).map_err(|e| e.to_string())
+        let resp = match agent.get(&url).call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => {
+                last_err = format!("HTTP {code} for {}", s.zip_name());
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .take(1024 * 1024 * 1024) // 1 GB safety cap
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+
+        match zip::ZipArchive::new(Cursor::new(bytes)) {
+            Ok(mut zip) => {
+                fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                return zip.extract(&dir).map_err(|e| e.to_string());
+            }
+            Err(e) => {
+                last_err = format!("{} was not a zip ({e})", s.zip_name());
+            }
+        }
+    }
+    Err(last_err)
 }
