@@ -5,8 +5,9 @@ Build a hosted-friendly catalog of the whole ambientCG library (metadata only).
     python ambientcg_catalog.py
 
 Writes into ./catalog/ :
-    index.csv                      type,category,count,file_url   <- Claude starts here
-    <type>/<Category>.csv          id,title,tags,description     <- small files, one per category
+    index.csv                      type,categories,assets,index_url   <- Claude starts here (short)
+    <type>/index.csv               category,count,file_url            <- one small index per type
+    <type>/<Category>.csv          id,title,tags,description          <- small files, one per category
     full.jsonl                     raw records, for local/power use
 
 Set CATALOG_BASE_URL to where ./catalog/ will be hosted, so index.csv contains full URLs
@@ -57,8 +58,10 @@ def pick(rec, *keys, default=""):
 def tags_text(rec):
     t = pick(rec, "tags", default=[])
     if isinstance(t, list):
-        return ";".join(str(x.get("name", x)) if isinstance(x, dict) else str(x) for x in t)
-    return str(t)
+        items = [str(x.get("name", x)) if isinstance(x, dict) else str(x) for x in t]
+    else:
+        items = str(t).split(";")
+    return ";".join(i for i in items if i and not i.isdigit())  # drop noise like "1", "2"
 
 
 def category_of(asset_id):
@@ -99,7 +102,10 @@ def main():
         desc = str(pick(r, "shortDescription"))[:120].replace("\n", " ")
         groups[(typ, category_of(aid))].append([aid, pick(r, "title"), tags_text(r), desc])
 
-    index_rows = []
+    def url_for(rel):
+        return f"{BASE_URL}/{rel}" if BASE_URL else rel
+
+    by_type = defaultdict(list)
     for (typ, cat), rows in sorted(groups.items()):
         d = OUT / typ
         d.mkdir(exist_ok=True)
@@ -107,18 +113,25 @@ def main():
             w = csv.writer(f)
             w.writerow(["id", "title", "tags", "description"])
             w.writerows(sorted(rows))
-        rel = f"{typ}/{safe(cat)}.csv"
-        index_rows.append([typ, cat, len(rows), f"{BASE_URL}/{rel}" if BASE_URL else rel])
+        by_type[typ].append([cat, len(rows), url_for(f"{typ}/{safe(cat)}.csv")])
+
+    top_rows = []
+    for typ, rows in sorted(by_type.items()):
+        with open(OUT / typ / "index.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["category", "count", "file_url"])
+            w.writerows(rows)
+        top_rows.append([typ, len(rows), sum(r[1] for r in rows), url_for(f"{typ}/index.csv")])
 
     with open(OUT / "index.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["type", "category", "count", "file_url"])
-        w.writerows(index_rows)
+        w.writerow(["type", "categories", "assets", "index_url"])
+        w.writerows(top_rows)
     with open(OUT / "full.jsonl", "w", encoding="utf-8") as f:
         for r in recs:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    print(f"Done: {len(recs)} assets, {len(index_rows)} category files in {OUT}/")
+    print(f"Done: {len(recs)} assets, {sum(len(v) for v in by_type.values())} category files in {OUT}/")
     if not BASE_URL:
         print("Tip: set CATALOG_BASE_URL so index.csv contains full URLs.")
 

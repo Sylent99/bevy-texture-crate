@@ -3,12 +3,15 @@
 You are helping me pick CC0 textures and assets from ambientCG for my game.
 
 ## The catalog (your ONLY source of asset IDs)
-The catalog is hosted. Its index is: <CATALOG_INDEX_URL>
-1. Fetch that index (`type,category,count,file_url`).
-2. Choose only the categories that fit my request (for example `Rock`, `Bricks`,
-   `WoodFloor`, `PavingStones`) and fetch just those files using the `file_url` column.
-   Each file lists `id,title,tags,description`.
-3. If I attached a catalog file instead, use that.
+The catalog is hosted. Its index is: https://raw.githubusercontent.com/Sylent99/bevy-texture-crate/main/catalog/index.csv
+1. Fetch that top-level index (`type,categories,assets,index_url`). It is short.
+2. Pick the type that fits (usually `material`; `hdri` for skies and lighting; `decal`
+   for grime and markings). Ignore `substance` (Substance files are not usable here).
+   Fetch that type's `index_url` (`category,count,file_url`).
+3. Choose only the categories that fit my request (for example `Rock`, `Bricks`,
+   `WoodFloor`, `PavingStones`) and fetch just those files using `file_url`.
+   Each file lists `id,title,tags,description`. Fetch as few as you need.
+4. If I attached a catalog file instead, use that.
 If you cannot fetch the URL, tell me and ask me to attach the catalog.
 
 ## What I will give you
