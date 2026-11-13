@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Texture Crate (ambientCG)</title>
+<style>
+  :root { --bg:#fff; --fg:#1c1c1e; --muted:#6b6b70; --line:#dcdce0; --card:#f6f6f8; --accent:#2563eb; --ok:#15803d; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17171a; --fg:#ececef; --muted:#9a9aa2; --line:#33333a; --card:#212126; --accent:#6d9bff; --ok:#4ade80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:16px; margin:28px 0 8px; }
+  p, li { color:var(--muted); } .small { font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  textarea, input[type=search], select { width:100%; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
+  textarea { min-height:110px; font-family:ui-monospace,monospace; font-size:13px; }
+  button, .btn { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; cursor:pointer; text-decoration:none; display:inline-block; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+  .row > * { flex:0 0 auto; } .grow { flex:1 1 200px !important; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; font-size:14px; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { color:var(--muted); font-size:12px; } .ok { color:var(--ok); } a { color:var(--accent); }
+  .wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Texture Crate</h1>
+  <p>Collect textures from <a href="https://ambientcg.com" target="_blank" rel="noopener">ambientCG</a> (CC0, free for any use) and download only what you need. Works offline except for the downloads themselves. Nothing is uploaded anywhere.</p>
+
+  <h2>1. Get a list</h2>
+  <div class="card">
+    <strong>Option A: paste what Claude gave you</strong>
+    <p class="small" style="margin:4px 0 8px">Paste the JSON block (a manifest or palette) and press Load.</p>
+    <textarea id="paste" placeholder='{"assets":[{"id":"PavingStones137","resolution":"2K","format":"JPG"}]}'></textarea>
+    <div class="row"><button id="loadPaste">Load list</button><span id="pasteMsg" class="small"></span></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <strong>Option B: browse the catalog yourself</strong>
+    <p class="small" style="margin:4px 0 8px">Open <code>ambientcg_catalog.csv</code> (included, or rebuilt with the catalog script).</p>
+    <input type="file" id="csvFile" accept=".csv,text/csv">
+    <div id="browse" hidden>
+      <div class="row">
+        <input type="search" id="q" class="grow" placeholder="Search: rock moss, wood floor, plaster...">
+        <select id="typeFilter" style="width:auto"><option value="">All types</option></select>
+      </div>
+      <div class="wrap"><table id="results"></table></div>
+      <p class="small" id="resultNote"></p>
+    </div>
+  </div>
+
+  <h2>2. Your crate <span id="count" class="tag"></span></h2>
+  <div class="card">
+    <div class="row">
+      <label class="small">Resolution for all <select id="allRes" style="width:auto"><option>1K</option><option selected>2K</option><option>4K</option><option>8K</option></select></label>
+      <label class="small">Format <select id="allFmt" style="width:auto"><option selected>JPG</option><option>PNG</option></select></label>
+      <button class="ghost" id="applyAll">Apply to all</button>
+      <button class="ghost" id="clear">Clear</button>
+    </div>
+    <div class="wrap"><table id="crate"></table></div>
+    <div class="row">
+      <button id="dlAll" disabled>Download all</button>
+      <button class="ghost" id="saveManifest" disabled>Save list as JSON</button>
+      <span id="dlMsg" class="small"></span>
+    </div>
+    <p class="small">If your browser asks to allow multiple downloads, choose Allow. Each row also has its own link. Files arrive as .zip in your Downloads folder; unzip them into your project.</p>
+  </div>
+
+  <h2>Notes</h2>
+  <ul class="small">
+    <li>HDRIs and 3D models use different file names than materials (for example <code>1K-HDR</code>). If a download fails, ask Claude for the exact file name, or copy it from the asset's page on ambientCG.</li>
+    <li>Credit is not required for CC0 assets, but ambientCG appreciates it. See <a href="https://docs.ambientcg.com/license/" target="_blank" rel="noopener">their license page</a>.</li>
+    <li>This tool is a community project and is not affiliated with ambientCG.</li>
+  </ul>
+</main>
+
+<script>
+(function () {
+  var GET = "https://ambientcg.com/get?file=";
+  var crate = [];      // {id, resolution, format, role?, file?}
+  var catalog = [];    // {id, type, technique, title, tags, description}
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+
+  function fileName(it) { return it.file || (it.id + "_" + it.resolution + "-" + it.format + ".zip"); }
+  function url(it) { return GET + encodeURIComponent(fileName(it)); }
+
+  // ---------- crate ----------
+  function addItem(it) {
+    var key = it.file || (it.id + it.resolution + it.format);
+    for (var i = 0; i < crate.length; i++) {
+      if ((crate[i].file || (crate[i].id + crate[i].resolution + crate[i].format)) === key && crate[i].role === it.role) return;
+    }
+    crate.push(it);
+  }
+
+  function renderCrate() {
+    var t = $("crate");
+    if (!crate.length) { t.innerHTML = "<tr><td class='tag'>Empty. Load a list or add assets from the catalog.</td></tr>"; }
+    else {
+      var h = "<tr><th>Asset</th><th>Role</th><th>Res</th><th>Format</th><th></th></tr>";
+      crate.forEach(function (it, i) {
+        h += "<tr><td><a href='" + esc(url(it)) + "'>" + esc(it.id || it.file) + "</a></td>" +
+             "<td class='tag'>" + esc(it.role || "") + "</td>" +
+             "<td>" + (it.file ? "<span class='tag'>file</span>" : sel("res", i, ["1K","2K","4K","8K"], it.resolution)) + "</td>" +
+             "<td>" + (it.file ? "" : sel("fmt", i, ["JPG","PNG","HDR","EXR"], it.format)) + "</td>" +
+             "<td><button class='ghost' data-rm='" + i + "'>Remove</button></td></tr>";
+      });
+      t.innerHTML = h;
+    }
+    $("count").textContent = crate.length ? "(" + crate.length + ")" : "";
+    $("dlAll").disabled = $("saveManifest").disabled = !crate.length;
+  }
+  function sel(kind, i, opts, cur) {
+    return "<select data-" + kind + "='" + i + "'>" + opts.map(function (o) {
+      return "<option" + (o === cur ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select>";
+  }
+
+  $("crate").addEventListener("click", function (e) {
+    var rm = e.target.getAttribute("data-rm");
+    if (rm !== null) { crate.splice(+rm, 1); renderCrate(); }
+  });
+  $("crate").addEventListener("change", function (e) {
+    var r = e.target.getAttribute("data-res"), f = e.target.getAttribute("data-fmt");
+    if (r !== null) crate[+r].resolution = e.target.value;
+    if (f !== null) crate[+f].format = e.target.value;
+    renderCrate();
+  });
+  $("applyAll").onclick = function () {
+    crate.forEach(function (it) { if (!it.file) { it.resolution = $("allRes").value; it.format = $("allFmt").value; } });
+    renderCrate();
+  };
+  $("clear").onclick = function () { crate = []; renderCrate(); };
+
+  // ---------- paste manifest / palette ----------
+  $("loadPaste").onclick = function () {
+    var msg = $("pasteMsg");
+    var text = $("paste").value.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    try {
+      var doc = JSON.parse(text), n = 0, list = [];
+      if (doc.roles) {
+        Object.keys(doc.roles).forEach(function (role) {
+          var v = doc.roles[role];
+          (Array.isArray(v) ? v : [v]).forEach(function (x) { list.push(Object.assign({ role: role }, x)); });
+        });
+      } else if (doc.assets) { list = doc.assets; }
+      else throw new Error('No "assets" or "roles" found');
+      list.forEach(function (x) {
+        if (!x.id && !x.file) return;
+        addItem({ id: x.id, file: x.file, role: x.role, resolution: x.resolution || "2K", format: x.format || "JPG" }); n++;
+      });
+      msg.className = "small ok"; msg.textContent = "Added " + n + " item(s).";
+      renderCrate();
+    } catch (err) { msg.className = "small"; msg.textContent = "Could not read that: " + err.message; }
+  };
+
+  // ---------- catalog ----------
+  function parseCSV(text) {
+    var rows = [], row = [], cur = "", q = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (q) {
+        if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+        else cur += c;
+      } else if (c === '"') q = true;
+      else if (c === ",") { row.push(cur); cur = ""; }
+      else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+      else if (c !== "\r") cur += c;
+    }
+    if (cur || row.length) { row.push(cur); rows.push(row); }
+    return rows;
+  }
+
+  $("csvFile").onchange = function (e) {
+    var f = e.target.files[0]; if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      var rows = parseCSV(rd.result), head = rows.shift() || [];
+      var ix = function (n) { return head.indexOf(n); };
+      catalog = rows.filter(function (r) { return r.length > 1 && r[ix("id")]; }).map(function (r) {
+        return { id: r[ix("id")], type: r[ix("type")], technique: r[ix("technique")],
+                 title: r[ix("title")], tags: r[ix("tags")], description: r[ix("description")] };
+      });
+      var types = {}; catalog.forEach(function (a) { if (a.type) types[a.type] = 1; });
+      $("typeFilter").innerHTML = "<option value=''>All types</option>" +
+        Object.keys(types).sort().map(function (t) { return "<option>" + esc(t) + "</option>"; }).join("");
+      $("browse").hidden = false; search();
+    };
+    rd.readAsText(f);
+  };
+
+  function search() {
+    var words = $("q").value.toLowerCase().split(/[\s,]+/).filter(Boolean), type = $("typeFilter").value;
+    var hits = catalog.filter(function (a) {
+      if (type && a.type !== type) return false;
+      var hay = (a.id + " " + a.title + " " + a.tags + " " + a.description + " " + a.type).toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) !== -1; });
+    });
+    var shown = hits.slice(0, 100);
+    $("results").innerHTML = shown.map(function (a) {
+      return "<tr><td><strong>" + esc(a.id) + "</strong><br><span class='tag'>" + esc(a.type) + (a.title ? " · " + esc(a.title) : "") + "</span><br><span class='tag'>" + esc(a.tags) + "</span></td>" +
+             "<td><button data-add='" + esc(a.id) + "'>Add</button></td></tr>";
+    }).join("");
+    $("resultNote").textContent = hits.length + " match(es)" + (hits.length > 100 ? ", showing the first 100. Narrow your search." : "") + " of " + catalog.length + " assets.";
+  }
+  $("q").oninput = search; $("typeFilter").onchange = search;
+  $("results").addEventListener("click", function (e) {
+    var id = e.target.getAttribute("data-add");
+    if (id) { addItem({ id: id, resolution: $("allRes").value, format: $("allFmt").value }); renderCrate(); }
+  });
+
+  // ---------- download ----------
+  $("dlAll").onclick = function () {
+    var i = 0, msg = $("dlMsg"); $("dlAll").disabled = true;
+    (function next() {
+      if (i >= crate.length) { msg.textContent = "Started " + crate.length + " download(s). Check your Downloads folder."; $("dlAll").disabled = false; return; }
+      msg.textContent = "Starting " + (i + 1) + " of " + crate.length + "...";
+      var a = document.createElement("a");
+      a.href = url(crate[i]); a.rel = "noopener"; a.style.display = "none";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      i++; setTimeout(next, 1200);
+    })();
+  };
+  $("saveManifest").onclick = function () {
+    var blob = new Blob([JSON.stringify({ assets: crate }, null, 2)], { type: "application/json" });
+    var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "manifest.json";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+
+  renderCrate();
+})();
+</script>
+</body>
+</html>

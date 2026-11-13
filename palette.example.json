@@ -1,0 +1,12 @@
+{
+  "style": "weathered coastal village",
+  "roles": {
+    "exterior_wall_main":  {"id": "Bricks075A",       "resolution": "2K", "format": "JPG"},
+    "exterior_wall_trim":  {"id": "PaintedPlaster017", "resolution": "2K", "format": "JPG"},
+    "exterior_roof":       {"id": "RoofingTiles014A",  "resolution": "2K", "format": "JPG"},
+    "ground_path":         {"id": "PavingStones137",   "resolution": "2K", "format": "JPG"},
+    "interior_floor":      {"id": "WoodFloor041",      "resolution": "2K", "format": "JPG"},
+    "interior_wall":       {"id": "Plaster003",        "resolution": "1K", "format": "JPG"}
+  },
+  "_note": "Asset IDs above are placeholders. Ask Claude to fill the palette from ambientcg_catalog.csv."
+}
