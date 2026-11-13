@@ -34,8 +34,10 @@ My game is built in **Bevy** (Rust). It uses the `ambientcg.rs` plugin from this
    into the conversation.
 3. Keep a palette coherent: similar tone, wear level, and scale across roles.
 4. Default to 2K and JPG unless I say otherwise. Use PNG if I ask for lossless.
-   Materials only use the `1K/2K/4K/8K` and `JPG/PNG` options. For HDRIs and 3D models,
-   tell me the exact file name is unconfirmed and I should check the asset's page.
+   Materials come in `1K/2K/4K/8K` and `JPG/PNG`. HDRIs have NO format: give only a
+   resolution (`1K` to `16K`, default `2K`; they get very large above 4K) and omit `format`.
+   Not every asset exists at every resolution; the game falls back to smaller ones.
+   For 3D models, tell me the exact file name is unconfirmed.
 5. Give a one-line reason for each pick.
 
 ## Output format
