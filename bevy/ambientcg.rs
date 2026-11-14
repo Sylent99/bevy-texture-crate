@@ -47,6 +47,13 @@ pub struct AssetSpec {
     /// How many times the texture repeats across one UV unit (tiling).
     #[serde(default = "default_scale")]
     pub uv_scale: f32,
+    /// Specular strength for non-metals, 0 (none) to 1. Bevy's default 0.5 makes grass, bark and
+    /// plaster look like plastic; the default here is 0.15. Use ~0.03 for grass and foliage.
+    #[serde(default)]
+    pub reflectance: Option<f32>,
+    /// Multiplies the roughness map (1 = as ambientCG made it; above 1 is clamped to fully rough).
+    #[serde(default)]
+    pub roughness: Option<f32>,
 }
 
 impl AssetSpec {
@@ -128,7 +135,9 @@ impl Plugin for AmbientCgPlugin {
             roles,
             cache: HashMap::new(),
             fallback: None,
-        });
+            mip_queue: Vec::new(),
+        })
+        .add_systems(Update, generate_mips);
     }
 }
 
@@ -139,6 +148,8 @@ pub struct AmbientCgLibrary {
     roles: HashMap<String, Vec<AssetSpec>>,
     cache: HashMap<String, Handle<StandardMaterial>>,
     fallback: Option<Handle<StandardMaterial>>,
+    /// Textures waiting for their mipmaps (made once they have loaded; see `generate_mips`).
+    mip_queue: Vec<Handle<Image>>,
 }
 
 impl AmbientCgLibrary {
@@ -153,6 +164,27 @@ impl AmbientCgLibrary {
         asset_server: &AssetServer,
         materials: &mut Assets<StandardMaterial>,
     ) -> Handle<StandardMaterial> {
+        match self.try_material(role, seed, asset_server, materials) {
+            Some(h) => h,
+            None => self.fallback(materials),
+        }
+    }
+
+    /// How many variants the palette lists for a role (0 when it has none). Quiet, unlike
+    /// `try_material`, so a caller can probe a chain of roles (setting-specific, then generic).
+    pub fn role_variants(&self, role: &str) -> usize {
+        self.roles.get(role).map_or(0, |v| v.len())
+    }
+
+    /// Like `material`, but `None` (with a warning) when the role isn't in the palette or its
+    /// textures aren't on disk, so a caller can keep what it had instead of a grey stand-in.
+    pub fn try_material(
+        &mut self,
+        role: &str,
+        seed: u64,
+        asset_server: &AssetServer,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> Option<Handle<StandardMaterial>> {
         let spec = self
             .roles
             .get(role)
@@ -161,24 +193,28 @@ impl AmbientCgLibrary {
 
         let Some(spec) = spec else {
             warn!("ambientCG: role '{role}' is not in the palette");
-            return self.fallback(materials);
+            return None;
         };
 
         let key = format!("{}_{}", spec.folder_name(), spec.uv_scale);
         if let Some(h) = self.cache.get(&key) {
-            return h.clone();
+            return Some(h.clone());
         }
 
         let dir = assets_root().join("ambientcg").join(spec.folder_name());
         let maps = scan_maps(&dir);
         if maps.color.is_none() {
             warn!("ambientCG: no textures on disk for {} (offline or download failed?)", spec.id);
-            return self.fallback(materials);
+            return None;
         }
 
-        let handle = materials.add(build_material(asset_server, &spec, &maps));
+        let mat = build_material(asset_server, &spec, &maps);
+        self.mip_queue.extend(
+            [&mat.base_color_texture, &mat.normal_map_texture, &mat.metallic_roughness_texture, &mat.occlusion_texture].into_iter().flatten().cloned(),
+        );
+        let handle = materials.add(mat);
         self.cache.insert(key, handle.clone());
-        handle
+        Some(handle)
     }
 
     /// For HDRI roles: the asset path (relative to `assets/`) of the downloaded
@@ -260,6 +296,9 @@ fn scan_maps(dir: &Path) -> MapFiles {
     m
 }
 
+/// Specular strength for textures that don't set their own (Bevy's own default is 0.5, too glossy).
+const DEFAULT_REFLECTANCE: f32 = 0.15;
+
 fn build_material(asset_server: &AssetServer, spec: &AssetSpec, maps: &MapFiles) -> StandardMaterial {
     let base = format!("ambientcg/{}/", spec.folder_name());
     let tex = |name: &Option<String>, srgb: bool| {
@@ -276,7 +315,8 @@ fn build_material(asset_server: &AssetServer, spec: &AssetSpec, maps: &MapFiles)
         // channel and metallic from blue, so keep metallic at 0 (non-metal surfaces).
         metallic_roughness_texture: tex(&maps.roughness, false),
         occlusion_texture: tex(&maps.ao, false),
-        perceptual_roughness: 1.0,
+        perceptual_roughness: spec.roughness.unwrap_or(1.0),
+        reflectance: spec.reflectance.unwrap_or(DEFAULT_REFLECTANCE),
         metallic: 0.0,
         uv_transform: Affine2::from_scale(Vec2::splat(spec.uv_scale)),
         ..default()
@@ -297,6 +337,7 @@ fn load_tex(asset_server: &AssetServer, path: String, srgb: bool) -> Handle<Imag
                 mag_filter: ImageFilterMode::Linear,
                 min_filter: ImageFilterMode::Linear,
                 mipmap_filter: ImageFilterMode::Linear,
+                anisotropy_clamp: 16,
                 ..default()
             });
         })
@@ -375,4 +416,60 @@ fn ensure_downloaded(spec: &AssetSpec, out_root: &Path) -> Result<(), String> {
         }
     }
     Err(last_err)
+}
+
+// ---------------------------------------------------------------- mipmaps
+
+/// Bevy's image loader makes no mipmaps, and a fine texture like grass or asphalt then shimmers
+/// into noise at a distance (every far pixel picks one random texel). This gives each loaded
+/// ambientCG texture a full mip chain (2x2 box filter), once.
+fn generate_mips(mut lib: ResMut<AmbientCgLibrary>, mut images: ResMut<Assets<Image>>) {
+    if lib.mip_queue.is_empty() {
+        return;
+    }
+    let queue = std::mem::take(&mut lib.mip_queue);
+    let mut waiting = Vec::new();
+    for h in queue {
+        match images.get_mut(&h) {
+            Some(mut img) => add_mips(&mut img),
+            None => waiting.push(h),
+        }
+    }
+    lib.mip_queue = waiting;
+}
+
+/// Appends mip levels to an 8-bit RGBA image (other formats are left alone).
+fn add_mips(img: &mut Image) {
+    use bevy::render::render_resource::TextureFormat;
+    let d = &img.texture_descriptor;
+    if d.mip_level_count > 1 || d.size.depth_or_array_layers != 1 || !matches!(d.format, TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb) {
+        return;
+    }
+    let (mut w, mut h) = (d.size.width as usize, d.size.height as usize);
+    let Some(base) = img.data.as_ref() else { return };
+    if base.len() != w * h * 4 {
+        return;
+    }
+    let mut data = base.clone();
+    let (mut start, mut levels) = (0usize, 1u32);
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut next = Vec::with_capacity(nw * nh * 4);
+        for y in 0..nh {
+            for x in 0..nw {
+                let (x0, x1) = ((x * 2).min(w - 1), (x * 2 + 1).min(w - 1));
+                let (y0, y1) = ((y * 2).min(h - 1), (y * 2 + 1).min(h - 1));
+                for c in 0..4 {
+                    let at = |xx: usize, yy: usize| data[start + (yy * w + xx) * 4 + c] as u32;
+                    next.push(((at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1) + 2) / 4) as u8);
+                }
+            }
+        }
+        start = data.len();
+        data.extend_from_slice(&next);
+        (w, h) = (nw, nh);
+        levels += 1;
+    }
+    img.data = Some(data);
+    img.texture_descriptor.mip_level_count = levels;
 }

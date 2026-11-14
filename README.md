@@ -40,6 +40,8 @@ current terms.
 | `HANDOVER.md` | Paste into a chat so Claude knows the catalog rules and the output format. |
 | `ambientcg_catalog.py` | Builds `ambientcg_catalog.jsonl` / `.csv` from the API. Run once, re-run to refresh. |
 | `ambientcg_fetch.py` | Downloads assets listed in a manifest **or palette**. Skips existing, extracts safely. |
+| `.github/workflows/update-catalog.yml` | Weekly Action that rebuilds `catalog/` (the hosted index Claude reads). |
+| `docs/integration-report.md` | Notes from wiring this crate into a real game (Ironclad). |
 | `manifest.example.json` | Flat list of assets to download. |
 | `palette.example.json` | Role-based palette (the format your game should consume). |
 
